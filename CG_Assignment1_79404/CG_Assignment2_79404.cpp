@@ -49,24 +49,10 @@ struct ImportedObject {
         : position(0.0f), rotation(0.0f), scale(1.0f), VAO(0), VBO(0), EBO(0), indexCount(0) {}
 };
 
-struct Spotlight {
-    glm::vec3 position;
-    glm::vec3 direction;
-    glm::vec3 color;
-    float intensity;
-    float cutoff;
-    float outerCutoff;
-
-    Spotlight()
-        : position(0.0f), direction(0.0f, -1.0f, 0.0f), color(1.0f), intensity(1.0f), cutoff(12.5f), outerCutoff(17.5f) {}
-};
-std::vector<Spotlight> spotlights;
-
 struct SelectedObject {
     enum Type {
         NONE,
-        IMPORTED_OBJECT,
-        SPOTLIGHT
+        IMPORTED_OBJECT
     } type;
 
     int index;
@@ -719,48 +705,31 @@ void renderSelectedObjectPanel() {
     ImGui::SetNextWindowSize({ OBJECT_PROPERTIES_PANEL_WIDTH, WINDOW_HEIGHT });
     ImGui::Begin("Object Properties", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-    if (selectedObject.isSelected()) {
-        if (selectedObject.type == SelectedObject::IMPORTED_OBJECT) {
+    if (selectedObject.isSelected() && selectedObject.type == SelectedObject::IMPORTED_OBJECT &&
+        selectedObject.index >= 0 && selectedObject.index < static_cast<int>(importedObjects.size())) {
 
-            auto& obj = importedObjects[selectedObject.index];
+        auto& obj = importedObjects[selectedObject.index];
 
-            if (ImGui::CollapsingHeader("Position")) {
-                ImGui::DragFloat3("Position", &obj.position.x, 0.1f, -100.0f, 100.0f);
-                if (ImGui::Button("Reset Position")) {
-                    obj.position = glm::vec3(0.0f);
-                }
+        if (ImGui::CollapsingHeader("Position")) {
+            ImGui::DragFloat3("Position", &obj.position.x, 0.1f, -100.0f, 100.0f);
+            if (ImGui::Button("Reset Position")) {
+                obj.position = glm::vec3(0.0f);
             }
-
-            if (ImGui::CollapsingHeader("Rotation")) {
-                ImGui::DragFloat("Rotate X", &obj.rotation.x, 0.1f, -FLT_MAX, FLT_MAX);
-                ImGui::DragFloat("Rotate Y", &obj.rotation.y, 0.1f, -FLT_MAX, FLT_MAX);
-                ImGui::DragFloat("Rotate Z", &obj.rotation.z, 0.1f, -FLT_MAX, FLT_MAX);
-                if (ImGui::Button("Reset Rotation")) {
-                    obj.rotation = glm::vec3(0.0f);
-                }
-            }
-
-            if (ImGui::CollapsingHeader("Scale")) {
-                ImGui::DragFloat3("Scale", &obj.scale.x, 0.1f, 0.1f, 100.0f);
-                if (ImGui::Button("Reset Scale")) {
-                    obj.scale = glm::vec3(1.0f);
-                }
-            }
-
         }
-        else if (selectedObject.type == SelectedObject::SPOTLIGHT) {
-            auto& light = spotlights[selectedObject.index];
-            if (ImGui::CollapsingHeader("Position")) {
-                ImGui::DragFloat3("Position", &light.position.x, 0.1f);
+
+        if (ImGui::CollapsingHeader("Rotation")) {
+            ImGui::DragFloat("Rotate X", &obj.rotation.x, 0.1f, -FLT_MAX, FLT_MAX);
+            ImGui::DragFloat("Rotate Y", &obj.rotation.y, 0.1f, -FLT_MAX, FLT_MAX);
+            ImGui::DragFloat("Rotate Z", &obj.rotation.z, 0.1f, -FLT_MAX, FLT_MAX);
+            if (ImGui::Button("Reset Rotation")) {
+                obj.rotation = glm::vec3(0.0f);
             }
-            if (ImGui::CollapsingHeader("Direction")) {
-                ImGui::DragFloat3("Direction", &light.direction.x, 0.1f);
-            }
-            if (ImGui::CollapsingHeader("Lighting")) {
-                ImGui::ColorEdit3("Color", &light.color.x);
-                ImGui::DragFloat("Intensity", &light.intensity, 0.1f, 0.0f, 10.0f);
-                ImGui::DragFloat("Cutoff", &light.cutoff, 1.0f, 0.0f, 45.0f);
-                ImGui::DragFloat("Outer Cutoff", &light.outerCutoff, 1.0f, 0.0f, 45.0f);
+        }
+
+        if (ImGui::CollapsingHeader("Scale")) {
+            ImGui::DragFloat3("Scale", &obj.scale.x, 0.1f, 0.1f, 100.0f);
+            if (ImGui::Button("Reset Scale")) {
+                obj.scale = glm::vec3(1.0f);
             }
         }
     }
@@ -769,18 +738,6 @@ void renderSelectedObjectPanel() {
     }
 
     ImGui::End();
-}
-
-void renderSpotlights(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& projection) {
-    for (const auto& light : spotlights) {
-        glUseProgram(shaderProgram);
-        glUniform3fv(glGetUniformLocation(shaderProgram, "spotlightPos"), 1, glm::value_ptr(light.position));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "spotlightDir"), 1, glm::value_ptr(light.direction));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "spotlightColor"), 1, glm::value_ptr(light.color));
-        glUniform1f(glGetUniformLocation(shaderProgram, "spotlightIntensity"), light.intensity);
-        glUniform1f(glGetUniformLocation(shaderProgram, "spotlightCutoff"), glm::cos(glm::radians(light.cutoff)));
-        glUniform1f(glGetUniformLocation(shaderProgram, "spotlightOuterCutoff"), glm::cos(glm::radians(light.outerCutoff)));
-    }
 }
 
 void renderObjectListPanel() {
@@ -796,10 +753,6 @@ void renderObjectListPanel() {
         exportSelectedObject();
     }
 
-    if (ImGui::Button("Add Spotlight")) {
-        spotlights.emplace_back();
-    }
-
     static char searchFilter[64] = "";
     ImGui::InputText("Search", searchFilter, sizeof(searchFilter));
     ImGui::Separator();
@@ -813,13 +766,6 @@ void renderObjectListPanel() {
                     selectedObject.type = SelectedObject::IMPORTED_OBJECT;
                     selectedObject.index = static_cast<int>(i);
                     std::cout << "Selected Index: " << selectedObject.index << std::endl;
-                }
-            }
-            for (size_t i = 0; i < spotlights.size(); ++i) {
-                bool isSelected = (selectedObject.type == SelectedObject::SPOTLIGHT && selectedObject.index == static_cast<int>(i));
-                if (ImGui::Selectable(("Spotlight " + std::to_string(i)).c_str(), isSelected)) {
-                    selectedObject.type = SelectedObject::SPOTLIGHT;
-                    selectedObject.index = static_cast<int>(i);
                 }
             }
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -893,7 +839,6 @@ int main() {
             glClear(GL_STENCIL_BUFFER_BIT);
 
             renderer.render({ obj }, cubeShader, view, projection);
-            renderSpotlights(cubeShader, view, projection);
 
             renderOutline(obj, outlineShader, view, projection);
 
