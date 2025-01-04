@@ -16,7 +16,8 @@
 #include "stb_image.h"
 
 const unsigned int VIEWPORT_WIDTH = 800, VIEWPORT_HEIGHT = 800;
-const unsigned int OBJECT_PROPERTIES_PANEL_WIDTH = 250, OBJECT_LIST_PANEL_WIDTH = 250, WINDOW_WIDTH = OBJECT_PROPERTIES_PANEL_WIDTH + OBJECT_LIST_PANEL_WIDTH + VIEWPORT_WIDTH;
+const unsigned int OBJECT_PROPERTIES_PANEL_WIDTH = 250, OBJECT_LIST_PANEL_WIDTH = 250;
+const unsigned int WINDOW_WIDTH = OBJECT_PROPERTIES_PANEL_WIDTH + OBJECT_LIST_PANEL_WIDTH + VIEWPORT_WIDTH;
 const unsigned int WINDOW_HEIGHT = VIEWPORT_HEIGHT;
 
 double lastMouseX, lastMouseY;
@@ -25,21 +26,15 @@ glm::mat4 projection;
 
 float normalSpeed = 0.1f;
 float fastSpeed = 0.5f;
-bool isConstrained = false;
 glm::vec3 movementBoundsMin(-50.0f, -50.0f, -50.0f);
 glm::vec3 movementBoundsMax(50.0f, 50.0f, 50.0f);
 
 glm::vec3 cameraTarget(0.0f), cameraPos(0.0f, 0.0f, 5.0f), cameraUp(0.0f, 1.0f, 0.0f), cameraFront = glm::normalize(cameraTarget - cameraPos);
 float cameraYaw = -90.0f, cameraPitch = 0.0f;
 
-GLuint gridVAO, gridVBO, VAO, VBO, EBO;
-std::vector<float> gridVertices;
+GLuint gridVAO, gridVBO, VAO, lightCubeVAO, lightCubeVBO;
 
-struct Object {
-    glm::vec3 position, rotation, scale;
-    Object(glm::vec3 pos = glm::vec3(0.0f), glm::vec3 rot = glm::vec3(0.0f), glm::vec3 scl = glm::vec3(1.0f))
-        : position(pos), rotation(rot), scale(scl) {}
-};
+std::vector<float> gridVertices;
 
 struct ImportedObject {
     GLuint VAO, VBO, EBO;
@@ -49,10 +44,13 @@ struct ImportedObject {
         : position(0.0f), rotation(0.0f), scale(1.0f), VAO(0), VBO(0), EBO(0), indexCount(0) {}
 };
 
+std::vector<ImportedObject> importedObjects;
+
 struct SelectedObject {
     enum Type {
         NONE,
-        IMPORTED_OBJECT
+        IMPORTED_OBJECT,
+        LIGHT
     } type;
 
     int index;
@@ -69,10 +67,26 @@ struct SelectedObject {
     }
 };
 
-std::vector<Object> objects;
-std::vector<ImportedObject> importedObjects;
 SelectedObject selectedObject;
-int selectedObjectIndex = -1;
+
+struct Light {
+    glm::vec3 position;
+    glm::vec3 direction;
+    glm::vec3 color;
+    float brightness;
+    float cutOff;
+    float outerCutOff;
+
+    Light(glm::vec3 pos = glm::vec3(0.0f, 5.0f, 0.0f),
+        glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f),
+        glm::vec3 col = glm::vec3(1.0f),
+        float bright = 1.0f,
+        float cut = 0.5f,
+        float outer = 1.0f)
+        : position(pos), direction(dir), color(col), brightness(bright), cutOff(cut), outerCutOff(outer) {}
+};
+
+std::vector<Light> sceneLights;
 
 GLFWwindow* initGLFW() {
     if (!glfwInit()) return nullptr;
@@ -126,7 +140,6 @@ bool intersectRayAABB(const glm::vec3& rayOrigin, const glm::vec3& rayDir, const
 }
 
 glm::vec3 getRayFromScreenCoords(double mouseX, double mouseY, int screenWidth, int screenHeight, const glm::mat4& projection, const glm::mat4& view) {
-
     float x = (2.0f * mouseX) / screenWidth - 1.0f;
     float y = 1.0f - (2.0f * mouseY) / screenHeight;
     glm::vec4 rayNDC(x, y, -1.0f, 1.0f);
@@ -345,20 +358,7 @@ void processInput(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) cameraPos -= up * currentSpeed;           // Up (Q)
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) cameraPos += up * currentSpeed;           // Down (E)
 
-    if (isConstrained) {
-        cameraPos.x = glm::clamp(cameraPos.x, movementBoundsMin.x, movementBoundsMax.x);
-        cameraPos.y = glm::clamp(cameraPos.y, movementBoundsMin.y, movementBoundsMax.y);
-        cameraPos.z = glm::clamp(cameraPos.z, movementBoundsMin.z, movementBoundsMax.z);
-    }
-
     cameraTarget = cameraPos + cameraFront;
-}
-
-void toggleConstraints(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS) {
-        isConstrained = !isConstrained;
-        std::cout << "Movement constraints " << (isConstrained ? "enabled" : "disabled") << std::endl;
-    }
 }
 
 void scrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
@@ -408,58 +408,17 @@ void renderGrid(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& pr
     glBindVertexArray(0);
 }
 
-void render(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& projection) {
-    glUseProgram(shaderProgram);
-
-    for (const auto& obj : objects) {
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position);
-        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, obj.scale);
-
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-    }
-}
-
-void renderImportedObjects(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& projection) {
-    glUseProgram(shaderProgram);
-
-    for (size_t i = 0; i < importedObjects.size(); ++i) {
-        auto& obj = importedObjects[i];
-        if (obj.indexCount == 0) continue;
-
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position);
-        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, obj.scale);
-
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-        glBindVertexArray(obj.VAO);
-        glDrawElements(GL_TRIANGLES, obj.indexCount, GL_UNSIGNED_INT, nullptr);
-    }
-
-    glBindVertexArray(0);
-}
-
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 
-uniform mat4 model, view, projection;
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
 
-out vec3 Normal, FragPos;
+out vec3 FragPos;
+out vec3 Normal;
 
 void main() {
     FragPos = vec3(model * vec4(aPos, 1.0));
@@ -472,23 +431,59 @@ const char* fragmentShaderSource = R"(
 #version 330 core
 out vec4 FragColor;
 
-in vec3 Normal, FragPos;
+in vec3 FragPos;
+in vec3 Normal;
 
-uniform vec3 lightPos, viewPos, lightColor, objectColor;
+struct Light {
+    vec3 position;
+    vec3 direction;
+    vec3 color;
+    float brightness;
+    float cutOff;
+    float outerCutOff;
+    float constant;
+    float linear;
+    float quadratic;
+};
+
+uniform vec3 viewPosition;
+uniform Light lights[10];
+uniform int numLights;
+
+uniform vec3 objectColor;
 
 void main() {
+    vec3 result = vec3(0.0);
     vec3 norm = normalize(Normal);
-    vec3 lightDir = normalize(lightPos - FragPos);
+    vec3 viewDir = normalize(viewPosition - FragPos);
 
-    vec3 ambient = 0.1 * lightColor;
-    vec3 diffuse = max(dot(norm, lightDir), 0.0) * lightColor;
+    for (int i = 0; i < numLights; i++) {
+        Light light = lights[i];
 
-    vec3 viewDir = normalize(viewPos - FragPos);
-    vec3 reflectDir = reflect(-lightDir, norm);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
-    vec3 specular = 0.5 * spec * lightColor;
+        vec3 lightColor = light.color * light.brightness;
 
-    vec3 result = (ambient + diffuse + specular) * objectColor;
+        vec3 lightDir = normalize(light.position - FragPos);
+
+        float theta = dot(lightDir, normalize(-light.direction));
+        float epsilon = light.cutOff - light.outerCutOff;
+        float intensity = clamp((theta - light.outerCutOff) / epsilon, 0.0, 1.0);
+
+        vec3 ambient = 0.1 * lightColor;
+
+        float diff = max(dot(norm, lightDir), 0.0);
+        vec3 diffuse = diff * lightColor;
+
+        vec3 reflectDir = reflect(-lightDir, norm);
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+        vec3 specular = 0.5 * spec * lightColor;
+
+        float distance = length(light.position - FragPos);
+        float attenuation = 1.0 / (light.constant + light.linear * distance + light.quadratic * (distance * distance));
+
+        result += (ambient + diffuse * intensity + specular * intensity) * attenuation;
+    }
+
+    result *= objectColor;
     FragColor = vec4(result, 1.0);
 }
 )";
@@ -550,13 +545,37 @@ void main() {
 }
 )";
 
+const char* lightCubeVertexShaderSource = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+void main() {
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+)";
+
+const char* lightCubeFragmentShaderSource = R"(
+#version 330 core
+out vec4 FragColor;
+
+uniform vec3 lightColor;
+
+void main() {
+    FragColor = vec4(lightColor, 1.0);
+}
+)";
+
 GLuint createShaderProgram(const char* vShaderSrc, const char* fShaderSrc) {
     auto compileShader = [](GLenum type, const char* src) {
         GLuint shader = glCreateShader(type);
         glShaderSource(shader, 1, &src, nullptr);
         glCompileShader(shader);
         return shader;
-        };
+    };
 
     GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vShaderSrc);
     GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fShaderSrc);
@@ -594,8 +613,7 @@ void importObject(const std::string& filePath) {
                 vertices[i * 6 + 3] = mesh->mNormals[i].x;
                 vertices[i * 6 + 4] = mesh->mNormals[i].y;
                 vertices[i * 6 + 5] = mesh->mNormals[i].z;
-            }
-            else {
+            } else {
                 vertices[i * 6 + 3] = vertices[i * 6 + 4] = vertices[i * 6 + 5] = 0.0f;
             }
         }
@@ -698,39 +716,127 @@ float calculateLOD(const glm::vec3& cameraPos, float baseScale = 1.0f, float max
     return glm::clamp(baseScale * (distance / 10.0f), baseScale, maxScale);
 }
 
-bool snapToGrid = false;
+void renderObjects(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& projection) {
+    glUseProgram(shaderProgram);
+
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniform3fv(glGetUniformLocation(shaderProgram, "viewPosition"), 1, glm::value_ptr(cameraPos));
+
+    glUniform1i(glGetUniformLocation(shaderProgram, "numLights"), sceneLights.size());
+    for (size_t i = 0; i < sceneLights.size(); i++) {
+        const std::string prefix = "lights[" + std::to_string(i) + "].";
+        const Light& light = sceneLights[i];
+        glUniform3fv(glGetUniformLocation(shaderProgram, (prefix + "position").c_str()), 1, glm::value_ptr(light.position));
+        glUniform3fv(glGetUniformLocation(shaderProgram, (prefix + "direction").c_str()), 1, glm::value_ptr(light.direction));
+        glUniform3fv(glGetUniformLocation(shaderProgram, (prefix + "color").c_str()), 1, glm::value_ptr(light.color));
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "brightness").c_str()), light.brightness);
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "cutOff").c_str()), glm::cos(glm::radians(light.cutOff)));
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "outerCutOff").c_str()), glm::cos(glm::radians(light.outerCutOff)));
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "constant").c_str()), 1.0f);
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "linear").c_str()), 0.09f);
+        glUniform1f(glGetUniformLocation(shaderProgram, (prefix + "quadratic").c_str()), 0.032f);
+    }
+
+    for (const auto& obj : importedObjects) {
+        if (obj.indexCount == 0) continue;
+
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position);
+        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, obj.scale);
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "objectColor"), 1, glm::value_ptr(glm::vec3(1.0f, 0.5f, 0.31f)));
+
+        glBindVertexArray(obj.VAO);
+        glDrawElements(GL_TRIANGLES, obj.indexCount, GL_UNSIGNED_INT, nullptr);
+    }
+
+    glBindVertexArray(0);
+}
+
+void renderLightCube(GLuint shaderProgram, const glm::mat4& view, const glm::mat4& projection) {
+    glUseProgram(shaderProgram);
+
+    for (const auto& light : sceneLights) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), light.position);
+        model = glm::scale(model, glm::vec3(0.2f));
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, glm::value_ptr(light.color));
+
+        glBindVertexArray(lightCubeVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+
+    glBindVertexArray(0);
+}
 
 void renderSelectedObjectPanel() {
     ImGui::SetNextWindowPos({ 0, 0 });
     ImGui::SetNextWindowSize({ OBJECT_PROPERTIES_PANEL_WIDTH, WINDOW_HEIGHT });
     ImGui::Begin("Object Properties", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-    if (selectedObject.isSelected() && selectedObject.type == SelectedObject::IMPORTED_OBJECT &&
-        selectedObject.index >= 0 && selectedObject.index < static_cast<int>(importedObjects.size())) {
+    if (selectedObject.isSelected()) {
+        if (selectedObject.type == SelectedObject::IMPORTED_OBJECT &&
+            selectedObject.index >= 0 && selectedObject.index < static_cast<int>(importedObjects.size())) {
 
-        auto& obj = importedObjects[selectedObject.index];
+            auto& obj = importedObjects[selectedObject.index];
 
-        if (ImGui::CollapsingHeader("Position")) {
-            ImGui::DragFloat3("Position", &obj.position.x, 0.1f, -100.0f, 100.0f);
-            if (ImGui::Button("Reset Position")) {
-                obj.position = glm::vec3(0.0f);
+            if (ImGui::CollapsingHeader("Position")) {
+                ImGui::DragFloat3("Position", &obj.position.x, 0.1f, -100.0f, 100.0f);
+                if (ImGui::Button("Reset Position")) {
+                    obj.position = glm::vec3(0.0f);
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Rotation")) {
+                ImGui::DragFloat("Rotate X", &obj.rotation.x, 0.1f, -FLT_MAX, FLT_MAX);
+                ImGui::DragFloat("Rotate Y", &obj.rotation.y, 0.1f, -FLT_MAX, FLT_MAX);
+                ImGui::DragFloat("Rotate Z", &obj.rotation.z, 0.1f, -FLT_MAX, FLT_MAX);
+                if (ImGui::Button("Reset Rotation")) {
+                    obj.rotation = glm::vec3(0.0f);
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Scale")) {
+                ImGui::DragFloat3("Scale", &obj.scale.x, 0.1f, 0.1f, 100.0f);
+                if (ImGui::Button("Reset Scale")) {
+                    obj.scale = glm::vec3(1.0f);
+                }
             }
         }
+        else if (selectedObject.type == SelectedObject::LIGHT &&
+             selectedObject.index >= 0 && selectedObject.index < static_cast<int>(sceneLights.size())) {
 
-        if (ImGui::CollapsingHeader("Rotation")) {
-            ImGui::DragFloat("Rotate X", &obj.rotation.x, 0.1f, -FLT_MAX, FLT_MAX);
-            ImGui::DragFloat("Rotate Y", &obj.rotation.y, 0.1f, -FLT_MAX, FLT_MAX);
-            ImGui::DragFloat("Rotate Z", &obj.rotation.z, 0.1f, -FLT_MAX, FLT_MAX);
-            if (ImGui::Button("Reset Rotation")) {
-                obj.rotation = glm::vec3(0.0f);
-            }
-        }
+             auto& light = sceneLights[selectedObject.index];
 
-        if (ImGui::CollapsingHeader("Scale")) {
-            ImGui::DragFloat3("Scale", &obj.scale.x, 0.1f, 0.1f, 100.0f);
-            if (ImGui::Button("Reset Scale")) {
-                obj.scale = glm::vec3(1.0f);
-            }
+             if (ImGui::CollapsingHeader("Light Position")) {
+                 ImGui::DragFloat3("Position", &light.position.x, 0.1f, -100.0f, 100.0f);
+                 if (ImGui::Button("Reset Position")) {
+                     light.position = glm::vec3(0.0f);
+                 }
+             }
+             if (ImGui::CollapsingHeader("Light Direction")) {
+                 ImGui::DragFloat3("Direction", &light.direction.x, 0.1f, -1.0f, 1.0f);
+                 if (ImGui::Button("Reset Direction")) {
+                     light.direction = glm::vec3(0.0f);
+                 }
+             }
+			 if (ImGui::CollapsingHeader("Light Color")) {
+				 ImGui::ColorEdit3("Color", &light.color.x);
+			 }
+			 if (ImGui::CollapsingHeader("CutOffs")) {
+                 ImGui::SliderAngle("CutOff", &light.cutOff, 0.0f, 45.0f);
+                 ImGui::SliderAngle("Outer CutOff", &light.outerCutOff, 45.0f, 90.0f);
+			 }
+             if (ImGui::CollapsingHeader("Brightness Slider")) {
+                 ImGui::SliderFloat("Brightness", &light.brightness, 0.1f, 5.0f);
+             }
         }
     }
     else {
@@ -752,6 +858,10 @@ void renderObjectListPanel() {
     if (ImGui::Button("Export")) {
         exportSelectedObject();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Add Light")) {
+        sceneLights.emplace_back();
+    }
 
     static char searchFilter[64] = "";
     ImGui::InputText("Search", searchFilter, sizeof(searchFilter));
@@ -762,14 +872,20 @@ void renderObjectListPanel() {
         if (strstr(("Imported Object " + std::to_string(i)).c_str(), searchFilter)) {
             bool isSelected = (selectedObject.type == SelectedObject::IMPORTED_OBJECT && selectedObject.index == static_cast<int>(i));
             if (ImGui::Selectable(("Imported Object " + std::to_string(i)).c_str(), isSelected)) {
-                if (selectedObject.index != static_cast<int>(i) || selectedObject.type != SelectedObject::IMPORTED_OBJECT) {
-                    selectedObject.type = SelectedObject::IMPORTED_OBJECT;
-                    selectedObject.index = static_cast<int>(i);
-                    std::cout << "Selected Index: " << selectedObject.index << std::endl;
-                }
+                selectedObject.type = SelectedObject::IMPORTED_OBJECT;
+                selectedObject.index = static_cast<int>(i);
             }
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                cameraTarget = importedObjects[i].position;
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Lights:");
+    for (size_t i = 0; i < sceneLights.size(); ++i) {
+        if (strstr(("Light " + std::to_string(i)).c_str(), searchFilter)) {
+            bool isSelected = (selectedObject.type == SelectedObject::LIGHT && selectedObject.index == static_cast<int>(i));
+            if (ImGui::Selectable(("Light " + std::to_string(i)).c_str(), isSelected)) {
+                selectedObject.type = SelectedObject::LIGHT;
+                selectedObject.index = static_cast<int>(i);
             }
         }
     }
@@ -789,12 +905,67 @@ int main() {
     GLuint cubeShader = createShaderProgram(vertexShaderSource, fragmentShaderSource);
     GLuint gridShader = createShaderProgram(gridVertexShaderSource, gridFragmentShaderSource);
     GLuint outlineShader = createShaderProgram(outlineVertexShaderSource, outlineFragmentShaderSource);
+    GLuint lightCubeShader = createShaderProgram(lightCubeVertexShaderSource, lightCubeFragmentShaderSource);
 
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
     glfwSetScrollCallback(window, scrollCallback);
 
     float gridScale = calculateLOD(cameraPos);
     setupGrid(gridScale);
+
+    float cubeVertices[] = {         
+        -0.5f, -0.5f, -0.5f,
+         0.5f, -0.5f, -0.5f,
+         0.5f,  0.5f, -0.5f,
+         0.5f,  0.5f, -0.5f,
+        -0.5f,  0.5f, -0.5f,
+        -0.5f, -0.5f, -0.5f,
+
+        -0.5f, -0.5f,  0.5f,
+         0.5f, -0.5f,  0.5f,
+         0.5f,  0.5f,  0.5f,
+         0.5f,  0.5f,  0.5f,
+        -0.5f,  0.5f,  0.5f,
+        -0.5f, -0.5f,  0.5f,
+
+        -0.5f,  0.5f,  0.5f,
+        -0.5f,  0.5f, -0.5f,
+        -0.5f, -0.5f, -0.5f,
+        -0.5f, -0.5f, -0.5f,
+        -0.5f, -0.5f,  0.5f,
+        -0.5f,  0.5f,  0.5f,
+
+         0.5f,  0.5f,  0.5f,
+         0.5f,  0.5f, -0.5f,
+         0.5f, -0.5f, -0.5f,
+         0.5f, -0.5f, -0.5f,
+         0.5f, -0.5f,  0.5f,
+         0.5f,  0.5f,  0.5f,
+
+        -0.5f, -0.5f, -0.5f,
+         0.5f, -0.5f, -0.5f,
+         0.5f, -0.5f,  0.5f,
+         0.5f, -0.5f,  0.5f,
+        -0.5f, -0.5f,  0.5f,
+        -0.5f, -0.5f, -0.5f,
+
+        -0.5f,  0.5f, -0.5f,
+         0.5f,  0.5f, -0.5f,
+         0.5f,  0.5f,  0.5f,
+         0.5f,  0.5f,  0.5f,
+        -0.5f,  0.5f,  0.5f,
+        -0.5f,  0.5f, -0.5f
+    };
+
+    glGenVertexArrays(1, &lightCubeVAO);
+    glGenBuffers(1, &lightCubeVBO);
+
+    glBindVertexArray(lightCubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, lightCubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
@@ -817,7 +988,6 @@ int main() {
         renderSelectedObjectPanel();
         renderObjectListPanel();
 
-        toggleConstraints(window);
         if (!ImGui::GetIO().WantCaptureMouse) {
             processInput(window);
         }
@@ -845,8 +1015,10 @@ int main() {
             glDisable(GL_STENCIL_TEST);
         }
 
+        renderLightCube(lightCubeShader, view, projection);
+
         glUseProgram(cubeShader);
-        renderer.render(importedObjects, cubeShader, view, projection);
+		renderObjects(cubeShader, view, projection);
 
         if (selectedObject.isSelected() && selectedObject.type == SelectedObject::IMPORTED_OBJECT) {
             const auto& obj = importedObjects[selectedObject.index];
