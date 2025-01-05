@@ -12,8 +12,6 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <tinyfiledialogs.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 const unsigned int VIEWPORT_WIDTH = 800, VIEWPORT_HEIGHT = 800;
 const unsigned int OBJECT_PROPERTIES_PANEL_WIDTH = 250, OBJECT_LIST_PANEL_WIDTH = 250;
@@ -80,9 +78,9 @@ struct Light {
     Light(glm::vec3 pos = glm::vec3(0.0f, 5.0f, 0.0f),
         glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f),
         glm::vec3 col = glm::vec3(1.0f),
-        float bright = 1.0f,
-        float cut = 0.5f,
-        float outer = 1.0f)
+        float bright = 3.0f,
+        float cut = 20.0f,
+        float outer = 25.0f)
         : position(pos), direction(dir), color(col), brightness(bright), cutOff(cut), outerCutOff(outer) {}
 };
 
@@ -664,25 +662,6 @@ void openImportDialog() {
     }
 }
 
-void exportSelectedObject() {
-    if (selectedObject.isSelected()) {
-        const auto& obj = importedObjects[selectedObject.index];
-        const char* savePath = tinyfd_saveFileDialog(
-            "Export Selected Object",
-            "",
-            0, nullptr,
-            "Save as"
-        );
-
-        if (savePath) {
-            std::cout << "Exporting object to " << savePath << std::endl;
-        }
-    }
-    else {
-        std::cout << "No object selected for export." << std::endl;
-    }
-}
-
 void renderOutline(const ImportedObject& obj, GLuint outlineShader, const glm::mat4& view, const glm::mat4& projection) {
     glEnable(GL_STENCIL_TEST);
     glStencilMask(0x00);
@@ -835,7 +814,7 @@ void renderSelectedObjectPanel() {
                  ImGui::SliderAngle("Outer CutOff", &light.outerCutOff, 45.0f, 90.0f);
 			 }
              if (ImGui::CollapsingHeader("Brightness Slider")) {
-                 ImGui::SliderFloat("Brightness", &light.brightness, 0.1f, 5.0f);
+                 ImGui::SliderFloat("Brightness", &light.brightness, 0.0f, 10.0f);
              }
         }
     }
@@ -853,10 +832,6 @@ void renderObjectListPanel() {
 
     if (ImGui::Button("Import")) {
         openImportDialog();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Export")) {
-        exportSelectedObject();
     }
     ImGui::SameLine();
     if (ImGui::Button("Add Light")) {
